@@ -18,7 +18,7 @@ const cp = require("child_process");
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
 const TRY_RE = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i;
-const BRIDGE_VERSION = "3.7.0";
+const BRIDGE_VERSION = "3.12.0";
 
 // 归一 · 反注 MCP 蹭耐用桥隧道: 综合 MCP(mcp_http.py)本机监听 9100, 其自起的快速隧道
 //   既翻倍触发 Cloudflare 限流又死不自愈。故由常驻桥把 /mcp 透明流式反代到本机 MCP,
@@ -1081,6 +1081,9 @@ class Bridge {
       const gu = ctx && ctx.globalState && ctx.globalState.get("daoTsUrl");
       if (gu) this.tsFixedUrl = String(gu);
     } catch (e) {}
+    // 面板暂停开关(持久化于 globalState): true 时停掉公网通道且看门狗不自愈, 固定 URL 保留, 点启动恢复
+    this.paused = false;
+    try { if (ctx && ctx.globalState && ctx.globalState.get("daoBridgePaused") === true) this.paused = true; } catch (e) {}
     this.attemptLog = [];
     this._starting = false;
     this.cfCredentials = loadCfCredentials();
@@ -1111,6 +1114,7 @@ class Bridge {
   stopWatchdog() { if (this._wd) { clearInterval(this._wd); this._wd = null; } }
 
   async _wdTick() {
+    if (this.paused) return; // 面板暂停: 不自检/不自愈
     if (this._starting || this._healing || this._wdBusy) return;
     this._wdBusy = true;
     try {
@@ -1186,6 +1190,7 @@ class Bridge {
   // ═══════════════════════════════════════════════════════════
   async start() {
     if (this._starting) return this.url;
+    if (this.paused) { this.lastErr = "已暂停 · 公网通道未启动(点面板「启动」恢复)"; this.notify(); return ""; }
     this._starting = true;
     try {
       this.startedAt = new Date();
@@ -1355,7 +1360,7 @@ class Bridge {
       url: this.url, port: this.srv.port, token: this.srv.token,
       ws: workspaceInfo(), startedAt: this.startedAt, lastErr: this.lastErr,
       mdPath: this.mdPath(), mode: this.mode, protocol: this.protocol, version: BRIDGE_VERSION,
-      tunnelMode: this.tunnelMode, tsFixedUrl: this.tsFixedUrl,
+      tunnelMode: this.tunnelMode, tsFixedUrl: this.tsFixedUrl, paused: this.paused,
       proxy: this.proxy, attempts: this.attemptLog,
       cfLoggedIn: !!(this.cfCredentials && (this.cfCredentials.apiToken || this.cfCredentials.globalApiKey || this.cfCredentials.tunnelToken)),
       cfEmail: this.cfCredentials ? this.cfCredentials.email || "" : "",
@@ -1722,6 +1727,22 @@ class Bridge {
       fs.writeFileSync(this.connPath(), JSON.stringify(c, null, 2), "utf8");
     } catch (e) {}
   }
+
+  // 面板暂停: 停掉公网通道(我方也连不进), 看门狗不自愈; 固定 URL(tsFixedUrl)保留, 状态持久化
+  async pause() {
+    this.paused = true;
+    try { await this.ctx.globalState.update("daoBridgePaused", true); } catch (e) {}
+    this.stop();
+    this.lastErr = "已暂停 · 公网通道已停(点「启动」恢复" + (this.tsFixedUrl ? "; 固定 URL 保留" : "") + ")";
+    this.notify();
+  }
+
+  // 面板启动: 解除暂停并重新打通
+  async resume() {
+    this.paused = false;
+    try { await this.ctx.globalState.update("daoBridgePaused", false); } catch (e) {}
+    return await this.start();
+  }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1752,6 +1773,18 @@ class BridgeViewProvider {
 
   async handle(m) {
     if (m.op === "restart") { this.bridge.stop(); const url = await this.bridge.start(); this.post({ type: "result", op: "restart", ok: !!url, text: url || this.bridge.lastErr }); return; }
+    if (m.op === "toggleRun") {
+      if (this.bridge.paused) {
+        this.post({ type: "result", op: "toggleRun", ok: true, text: "启动中…" });
+        const url = await this.bridge.resume();
+        this.post({ type: "result", op: "toggleRun", ok: !!url, text: url ? ("已启动 · " + url) : (this.bridge.lastErr || "启动失败") });
+      } else {
+        await this.bridge.pause();
+        this.post({ type: "result", op: "toggleRun", ok: true, text: this.bridge.lastErr || "已暂停" });
+      }
+      this.post({ type: "state", state: this.bridge.state() });
+      return;
+    }
     if (m.op === "setTunnel") {
       const mode = m.mode === "tailscale" ? "tailscale" : "cloudflare";
       const label = mode === "tailscale" ? "Tailscale 固定 URL" : "Cloudflare 动态";
@@ -1893,6 +1926,7 @@ pre{white-space:pre-wrap;word-break:break-all;background:var(--vscode-textCodeBl
   <div class="lbl">在线Agent</div><div id="agents" class="val">0</div>
   <div class="row" style="margin-top:6px">
     <button onclick="send('copyAll')" title="一键复制公网 URL 与 Token（含 Authorization 头），直接粘贴给云端 Agent">📋 复制</button>
+    <button id="toggleRun" onclick="send('toggleRun')" title="暂停=停掉公网通道（外部连不进），固定 URL 保留、看门狗不自愈；启动=恢复打通">⏸ 暂停</button>
     <button onclick="send('restart')" title="重启隧道（URL 会变，Token 不变）">♻️ 重启隧道</button>
     <button onclick="send('refreshToken')" title="生成全新 Token，旧 Token 立即作废，并用新 Token 重连公网通道">🔄 刷新Token</button>
   </div>
@@ -1962,9 +1996,10 @@ document.addEventListener('click',function(e){var t=e.target.closest('[data-op]'
 function v(id){return document.getElementById(id).value;}
 const out=document.getElementById('out');
 window.addEventListener('message',(e)=>{const m=e.data;
-  if(m.type==='state'){const s=m.state||{};const on=!!s.url;
-    document.getElementById('dot').className='dot '+(on?'ok':(s.lastErr?'bad':'pending'));
-    document.getElementById('stat').textContent=on?'已打通 · 公网在线':(s.lastErr?(''+s.lastErr):'隧道启动中…');
+  if(m.type==='state'){const s=m.state||{};const on=!!s.url;const paused=!!s.paused;
+    document.getElementById('dot').className='dot '+(paused?'pending':(on?'ok':(s.lastErr?'bad':'pending')));
+    document.getElementById('stat').textContent=paused?'已暂停 · 公网通道已停（点「启动」恢复'+(s.tsFixedUrl?'，固定 URL 保留':'')+'）':(on?'已打通 · 公网在线':(s.lastErr?(''+s.lastErr):'隧道启动中…'));
+    var tr=document.getElementById('toggleRun');if(tr){tr.textContent=paused?'▶ 启动':'⏸ 暂停';tr.style.outline=paused?'2px solid var(--vscode-focusBorder)':'';}
     document.getElementById('url').textContent=s.url||'—';
     document.getElementById('ws').textContent=s.ws?(s.ws.name+' · '+s.ws.root):'—';
     document.getElementById('mode').textContent=':'+s.port+' / '+s.mode+(s.protocol?' / '+s.protocol:'');
