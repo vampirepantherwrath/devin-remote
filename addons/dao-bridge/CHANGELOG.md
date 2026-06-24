@@ -2,6 +2,16 @@
 
 本项目遵循语义化版本。日期格式 YYYY-MM-DD。
 
+## [Unreleased]
+
+独立后端 `agent.js` 新增**双穿透模式**（`DAO_TUNNEL` 切换）。
+
+### 新增
+- `DAO_TUNNEL=cloudflare`（默认）：保持原 cloudflared 快速隧道，零账号、URL 动态（`*.trycloudflare.com`，重启会变）。
+- `DAO_TUNNEL=tailscale`：固定 URL（`*.ts.net` / MagicDNS），经 `tailscale serve --bg --https=443 http://127.0.0.1:<port>` 把本机端口暴露到 tailnet，URL 永不变；URL 自动从 `tailscale status` 的 `Self.DNSName` 推导，或用 `DAO_PUBLIC_URL` 显式指定。
+- 新增配置项：`DAO_TUNNEL` / `DAO_TAILSCALE`（可执行路径）/ `DAO_PUBLIC_URL`（固定 URL 覆盖）/ `DAO_TS_SERVE`（设 `0` 关闭自动 serve）。
+- README 配置表与「两种穿透模式」说明同步更新。
+
 ## [3.10.0] - 2026-06-19
 
 去 Worker 中继 · 默认快速隧道（去中心化）。
