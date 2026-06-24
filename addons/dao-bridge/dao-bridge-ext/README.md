@@ -2,6 +2,16 @@
 
 随 IDE 启停，**插件启动即自动打通整机公网穿透**，零配置、无需任何账号。道法自然 · 无为而无不为。
 
+## 穿透模式 · 界面一键切换（v3.7.0）
+面板新增「🔀 穿透模式」区块，**无需命令行 / 改环境变量**即可在两种公网入口方式间切换：
+
+- **☁️ Cloudflare 动态**（默认）：零配置快速隧道，URL 形如 `https://<random>.trycloudflare.com`，重启会变。
+- **🔒 Tailscale 固定**：固定 URL `https://<host>.ts.net`，重启不变。点按钮即自动跑 `tailscale serve --bg --https=443 http://127.0.0.1:<port>` 把本机端口暴露到 tailnet。固定 URL 留空则自动从 `tailscale status` 推导，也可在输入框显式填写（如 `https://henry.tailf52e02.ts.net`）。
+
+点任一按钮即「切换并重启隧道」，选择**持久化**（存于扩展 globalState，重载插件后仍记得）。当前模式在按钮高亮 + 文字提示中显示。
+
+前置条件（Tailscale 模式）：本机已 `tailscale up` 登录、tailnet 后台开启 MagicDNS + HTTPS Certificates；且**访问端（云端 Agent）必须也在同一 tailnet 内**才能解析 `*.ts.net` 直连。相关设置项：`daoBridge.tunnelMode`、`daoBridge.tailscalePath`、`daoBridge.tailscaleServe`。
+
 ## 刷新 Token 按钮（v3.4.0）
 面板新增「🔄 刷新Token」按钮：点一下即生成全新随机 Token，旧 Token 即刻作废，并用新 Token 重连公网通道。
 适用于已持久化连接、担心旧 Token 长期暴露时一键轮换。点一次换一次，无自动刷新、无其它副作用。

@@ -2,7 +2,7 @@
   "name": "dao-bridge",
   "displayName": "DAO Bridge · 公网穿透",
   "description": "工作区公网穿透：插件启动即自动打通整机隧道。默认走 Cloudflare 快速隧道；配置账号即走命名隧道；内置 cloudflared、代理自适应、看门狗自愈。道法自然·无为而无不为。",
-  "version": "3.10.0",
+  "version": "3.11.0",
   "publisher": "dao",
   "engines": { "vscode": "^1.80.0" },
   "categories": ["Other"],
@@ -41,7 +41,10 @@
         "daoBridge.autoProxy": { "type": "boolean", "default": true, "description": "自动探测本机代理（clash/v2ray 常见端口）用于 cloudflared 出站，适配国内网络。" },
         "daoBridge.confineToWorkspace": { "type": "boolean", "default": false, "description": "将 /api/ls /api/read /api/write 限制在工作区根目录内（沙箱）。默认关闭=整机穿透：云端 Agent 可操作整台电脑，工作区只是其中一部分。" },
         "daoBridge.watchdogIntervalMs": { "type": "number", "default": 20000, "description": "自愈看门狗回环自检间隔（毫秒）。只要 IDE 在跑就周期性打自己的公网 /api/health，端到端验证隧道可达。" },
-        "daoBridge.watchdogFailThreshold": { "type": "number", "default": 2, "description": "连续自检失败多少次后自动重连隧道（识破息屏/休眠后的僵尸连接）。" }
+        "daoBridge.watchdogFailThreshold": { "type": "number", "default": 2, "description": "连续自检失败多少次后自动重连隧道（识破息屏/休眠后的僵尸连接）。" },
+        "daoBridge.tunnelMode": { "type": "string", "enum": ["cloudflare", "tailscale"], "default": "cloudflare", "description": "穿透模式默认值（也可在面板「穿透模式」一键切换并持久化）。cloudflare=动态快速隧道；tailscale=固定 *.ts.net URL。" },
+        "daoBridge.tailscalePath": { "type": "string", "default": "", "description": "（Tailscale 模式）tailscale 可执行路径，留空自动探测（Windows: Program Files\\Tailscale；macOS: /Applications/Tailscale.app；否则走 PATH）。" },
+        "daoBridge.tailscaleServe": { "type": "boolean", "default": true, "description": "（Tailscale 模式）切到固定模式时自动执行 tailscale serve 把本机端口暴露到 *.ts.net:443。关闭则由你自行管理 serve。" }
       }
     }
   }
