@@ -14,6 +14,22 @@
 
 默认走 Cloudflare 快速隧道（临时 URL，重启会变；插件形态自带看门狗自愈+实时刷新接入文档）。需要稳定 URL 时，配置自己的 Cloudflare 命名隧道。
 
+### 两种穿透模式（`DAO_TUNNEL` 切换）
+
+| 模式 | URL | 适用 |
+|---|---|---|
+| `cloudflare`（默认） | 动态 `https://<random>.trycloudflare.com`（重启会变） | 零账号、零配置、即开即用 |
+| `tailscale` | 固定 `https://<host>.ts.net`（永不变） | 已组 tailnet、要稳定 URL；云端需在同一 tailnet 内 |
+
+```bash
+# 固定 URL 模式：经 tailscale serve 把本机端口暴露到 tailnet（需先 `tailscale up` 登录）
+DAO_TUNNEL=tailscale DAO_TOKEN=<token> node agent.js
+# URL 自动从 `tailscale status` 推导；也可显式指定：
+DAO_TUNNEL=tailscale DAO_PUBLIC_URL=https://henry.tailf52e02.ts.net DAO_TOKEN=<token> node agent.js
+```
+
+> tailscale 模式默认会自动跑 `tailscale serve --bg --https=443 http://127.0.0.1:<port>`（需 tailnet 后台开启 MagicDNS + HTTPS Certificates）；若想自行管理 serve，设 `DAO_TS_SERVE=0` 关闭。云端 Agent 必须**也在同一个 tailnet 内**（装 tailscale 并用 auth key `tailscale up`）才能解析 `*.ts.net` 直连。
+
 ## 启动(本机)
 
 ```powershell
@@ -50,3 +66,7 @@ curl -X POST https://<random>.trycloudflare.com/api/exec-sync \
 | `DAO_ROOT` | 工作根目录 | 用户目录 |
 | `DAO_CLOUDFLARED` | cloudflared 可执行路径 | `cloudflared`（PATH） |
 | `DAO_PROXY` | 出站代理（适配国内网络） | 自动探测 |
+| `DAO_TUNNEL` | 穿透模式：`cloudflare`(动态) / `tailscale`(固定) | `cloudflare` |
+| `DAO_TAILSCALE` | tailscale 可执行路径（仅 tailscale 模式） | `tailscale`（PATH） |
+| `DAO_PUBLIC_URL` | 固定公网 URL 覆盖（留空自动从 `tailscale status` 推导） | 空 |
+| `DAO_TS_SERVE` | 是否自动跑 `tailscale serve` 暴露端口；设 `0` 关闭自行 serve | `1` |
