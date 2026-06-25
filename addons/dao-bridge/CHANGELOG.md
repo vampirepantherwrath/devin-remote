@@ -4,6 +4,24 @@
 
 ## [Unreleased]
 
+插件 `dao-bridge-ext` v3.13.0：Tailscale 模式改用 **Funnel（公网可达）**。
+
+### 变更
+- Tailscale 固定模式默认用 `tailscale funnel --bg --https=443 http://127.0.0.1:<port>`（**公网可达**）暴露固定 URL，取代原 `tailscale serve`（仅 tailnet 内可达）。这样云端 Agent**无需加入 tailnet / 无需 auth key** 即可连接固定 URL。
+- 新增配置 `daoBridge.tailscaleFunnel`（默认 `true`）：设 `false` 退回 serve（仅同一 tailnet 内可达）。
+- 「⏸ 暂停」在 Tailscale 模式下额外执行 `tailscale funnel/serve off` 撤掉公开映射（设备名/固定 URL 永久保留），「▶ 启动」重新打通 → 面板暂停/启动真正控制公网固定 URL 的可达性。
+
+---
+
+插件 `dao-bridge-ext` v3.12.0 新增**面板暂停/启动开关**。
+
+### 新增
+- 状态卡新增「⏸ 暂停 / ▶ 启动」切换按钮：点暂停即停掉公网通道（外部连不进，看门狗不自愈），固定 URL（`tsFixedUrl`）保留；点启动恢复打通。
+- 暂停状态持久化于 `globalState`（`daoBridgePaused`），IDE 重载后保持；暂停态下 `start()` 与看门狗自检/自愈均被跳过。
+- `state()` 新增 `paused` 字段，面板按钮文字/状态点/状态文字随之联动。
+
+---
+
 独立后端 `agent.js` 新增**双穿透模式**（`DAO_TUNNEL` 切换）。
 
 ### 新增

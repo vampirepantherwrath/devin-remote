@@ -2,6 +2,24 @@
 
 随 IDE 启停，**插件启动即自动打通整机公网穿透**，零配置、无需任何账号。道法自然 · 无为而无不为。
 
+## 穿透模式 · 界面一键切换（v3.7.0）
+面板新增「🔀 穿透模式」区块，**无需命令行 / 改环境变量**即可在两种公网入口方式间切换：
+
+- **☁️ Cloudflare 动态**（默认）：零配置快速隧道，URL 形如 `https://<random>.trycloudflare.com`，重启会变。
+- **🔒 Tailscale 固定**：固定 URL `https://<host>.ts.net`，重启不变。点按钮即自动跑 `tailscale funnel --bg --https=443 http://127.0.0.1:<port>`（**Funnel = 公网可达**）把本机端口暴露到固定 URL。固定 URL 留空则自动从 `tailscale status` 推导，也可在输入框显式填写（如 `https://henry.tailf52e02.ts.net`）。
+
+点任一按钮即「切换并重启隧道」，选择**持久化**（存于扩展 globalState，重载插件后仍记得）。当前模式在按钮高亮 + 文字提示中显示。
+
+前置条件（Tailscale 模式）：本机已 `tailscale up` 登录、tailnet 后台开启 MagicDNS + HTTPS Certificates + **Funnel**。默认走 Funnel（公网可达），**访问端（云端 Agent）无需加入你的 tailnet、无需 auth key**；若设 `daoBridge.tailscaleFunnel=false` 退回 `serve`，则访问端必须也在同一 tailnet 内才能解析 `*.ts.net`。相关设置项：`daoBridge.tunnelMode`、`daoBridge.tailscalePath`、`daoBridge.tailscaleServe`、`daoBridge.tailscaleFunnel`。
+
+> ⚠️ **Linux 一次性授权（关键）**：tailscale funnel/serve 默认需 root。若用 `sudo` 起 funnel，则本插件（以普通用户运行）执行 `funnel off/on` 会**因无权限静默失败**——表现为「⏸ 暂停 / ▶ 启动」点了没反应、外部仍连得进。解决：一次性授权当前用户操作 tailscale（永久，写入 tailscaled 持久状态，重启不失效，不提升其它权限）：
+> ```bash
+> sudo tailscale set --operator=$USER      # 撤销：sudo tailscale set --operator=
+> ```
+> 授权后插件即可免 sudo、免弹框地管理 funnel，暂停/启动按钮才会真正生效。
+
+「⏸ 暂停」在 Tailscale 模式下会执行 `tailscale funnel/serve off` 撤掉公开映射（设备名/固定 URL 永久保留，外部连不进），「▶ 启动」重新打通。
+
 ## 刷新 Token 按钮（v3.4.0）
 面板新增「🔄 刷新Token」按钮：点一下即生成全新随机 Token，旧 Token 即刻作废，并用新 Token 重连公网通道。
 适用于已持久化连接、担心旧 Token 长期暴露时一键轮换。点一次换一次，无自动刷新、无其它副作用。

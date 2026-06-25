@@ -18,7 +18,7 @@ const cp = require("child_process");
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
 const TRY_RE = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i;
-const BRIDGE_VERSION = "3.6.0";
+const BRIDGE_VERSION = "3.12.0";
 
 // 归一 · 反注 MCP 蹭耐用桥隧道: 综合 MCP(mcp_http.py)本机监听 9100, 其自起的快速隧道
 //   既翻倍触发 Cloudflare 限流又死不自愈。故由常驻桥把 /mcp 透明流式反代到本机 MCP,
@@ -1071,6 +1071,19 @@ class Bridge {
     this.protocol = "";
     this.proxy = "";
     this.cfBin = "";
+    // 穿透模式 · 界面可切(持久化于 globalState): "cloudflare"(动态) | "tailscale"(固定 *.ts.net)
+    this.tunnelMode = "cloudflare";
+    this.tsFixedUrl = "";
+    try {
+      const gm = ctx && ctx.globalState && ctx.globalState.get("daoTunnelMode");
+      if (gm === "tailscale" || gm === "cloudflare") this.tunnelMode = gm;
+      else { const cm = String(vscode.workspace.getConfiguration("daoBridge").get("tunnelMode") || "").trim(); if (cm === "tailscale") this.tunnelMode = "tailscale"; }
+      const gu = ctx && ctx.globalState && ctx.globalState.get("daoTsUrl");
+      if (gu) this.tsFixedUrl = String(gu);
+    } catch (e) {}
+    // 面板暂停开关(持久化于 globalState): true 时停掉公网通道且看门狗不自愈, 固定 URL 保留, 点启动恢复
+    this.paused = false;
+    try { if (ctx && ctx.globalState && ctx.globalState.get("daoBridgePaused") === true) this.paused = true; } catch (e) {}
     this.attemptLog = [];
     this._starting = false;
     this.cfCredentials = loadCfCredentials();
@@ -1101,6 +1114,7 @@ class Bridge {
   stopWatchdog() { if (this._wd) { clearInterval(this._wd); this._wd = null; } }
 
   async _wdTick() {
+    if (this.paused) return; // 面板暂停: 不自检/不自愈
     if (this._starting || this._healing || this._wdBusy) return;
     this._wdBusy = true;
     try {
@@ -1176,6 +1190,7 @@ class Bridge {
   // ═══════════════════════════════════════════════════════════
   async start() {
     if (this._starting) return this.url;
+    if (this.paused) { this.lastErr = "已暂停 · 公网通道未启动(点面板「启动」恢复)"; this.notify(); return ""; }
     this._starting = true;
     try {
       this.startedAt = new Date();
@@ -1191,6 +1206,10 @@ class Bridge {
 
       // 本地服务先起(token + 统一路由就绪), cloudflared 复用之
       const port = await this.srv.start(tunnelToken ? (fixedPort || 9910) : (fixedPort || 0));
+
+      // 穿透模式 · Tailscale 固定 URL: 经 tailscale serve 暴露本机端口, URL 永不变。
+      // 与 cloudflared 互斥; 选此模式即不走下面的快速/命名隧道回退链。
+      if (this.tunnelMode === "tailscale") return await this._startTailscale(port);
 
       // cloudflared 隧道。内置优先, 缺失则多镜像下载(含国内加速) — 不依赖用户手动安装
       let bin = findCloudflared(this.ctx);
@@ -1269,12 +1288,95 @@ class Bridge {
     });
   }
 
+  // tailscale 可执行定位: 配置优先, 否则平台默认路径, 兜底裸命令(走 PATH)
+  _tailscaleBin() {
+    try { const c = String(vscode.workspace.getConfiguration("daoBridge").get("tailscalePath") || "").trim(); if (c) return c; } catch (e) {}
+    try {
+      if (process.platform === "win32") {
+        const pf = process.env["ProgramFiles"] || "C:\\Program Files";
+        const p = path.join(pf, "Tailscale", "tailscale.exe");
+        if (fs.existsSync(p)) return p;
+      } else if (process.platform === "darwin") {
+        const p = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
+        if (fs.existsSync(p)) return p;
+      }
+    } catch (e) {}
+    return "tailscale";
+  }
+
+  // 固定 URL 模式 — 帛书·「大方无隅，大器免成」: 一次配好, URL 永不变。
+  // ① 推导固定 URL: 用户填的 tsFixedUrl 优先, 否则从 `tailscale status --json` 取 Self.DNSName。
+  // ② tailscale serve --bg --https=443 把本机端口暴露成 https://<host>.ts.net (自带有效证书)。
+  // 仅 tailnet 内设备可解析/访问 *.ts.net; 云端 Agent 也须在同一 tailnet 才能连。
+  async _startTailscale(port) {
+    this.mode = "tailscale"; this.protocol = "tailscale"; this.attemptLog = []; this.notify();
+    const bin = this._tailscaleBin();
+    let url = String(this.tsFixedUrl || "").trim();
+    if (!url) {
+      try {
+        const out = cp.execFileSync(bin, ["status", "--json"], { encoding: "utf8", windowsHide: true, timeout: 8000 });
+        const st = JSON.parse(out);
+        const dns = st && st.Self && st.Self.DNSName;
+        if (dns) url = "https://" + String(dns).replace(/\.$/, "");
+      } catch (e) {
+        this.lastErr = "读取 tailscale 状态失败(确认已安装并 `tailscale up` 登录): " + (e && e.message ? e.message : e);
+      }
+    }
+    // 自动暴露本机端口到 443。默认 funnel(公网可达, 云端 Agent 无需加入 tailnet);
+    // 设 daoBridge.tailscaleFunnel=false 则退回 serve(仅 tailnet 内可达, 需云端也在同一 tailnet)。
+    // 设 daoBridge.tailscaleServe=false 完全关闭自动暴露, 由用户自行管理。
+    let auto = true, funnel = true;
+    try {
+      const c = vscode.workspace.getConfiguration("daoBridge");
+      auto = c.get("tailscaleServe") !== false;
+      funnel = c.get("tailscaleFunnel") !== false;
+    } catch (e) {}
+    let proto = funnel ? "funnel" : "serve";
+    if (auto) {
+      try {
+        cp.execFileSync(bin, [proto, "--bg", "--https=443", "http://127.0.0.1:" + port], { encoding: "utf8", windowsHide: true, timeout: 15000 });
+      } catch (e) {
+        this.lastErr = "tailscale " + proto + " 失败(需后台开启 MagicDNS + HTTPS 证书" + (funnel ? " + Funnel" : "") + "): " + (e && e.message ? e.message : e);
+      }
+    }
+    if (url) {
+      this.url = url.replace(/\/$/, "");
+      this.attemptLog = [{ mode: "tailscale", proto: proto, ok: true, url: this.url }];
+      this.writeArtifacts(); this.notify();
+      return this.url;
+    }
+    this.lastErr = this.lastErr || "未能确定固定 URL: 请在面板填固定 URL, 或确保本机已 `tailscale up` 登录";
+    this.attemptLog = [{ mode: "tailscale", proto: proto, ok: false, url: "" }];
+    this.writeArtifacts(); this.notify();
+    return "";
+  }
+
+  // 暂停时撤掉 tailscale 公开映射(funnel/serve off), 设备名/固定 URL 保留, 恢复时重新打通。
+  _tailscaleOff() {
+    if (this.tunnelMode !== "tailscale") return;
+    const bin = this._tailscaleBin();
+    for (const op of ["funnel", "serve"]) {
+      try { cp.execFileSync(bin, [op, "--https=443", "off"], { encoding: "utf8", windowsHide: true, timeout: 10000 }); } catch (e) {}
+    }
+  }
+
+  // 界面切换穿透模式 — 更新并持久化(globalState), 由调用方负责 stop()+start() 生效。
+  async setTunnelMode(mode, fixedUrl) {
+    this.tunnelMode = mode === "tailscale" ? "tailscale" : "cloudflare";
+    if (typeof fixedUrl === "string") this.tsFixedUrl = fixedUrl.trim();
+    try {
+      await this.ctx.globalState.update("daoTunnelMode", this.tunnelMode);
+      await this.ctx.globalState.update("daoTsUrl", this.tsFixedUrl);
+    } catch (e) {}
+  }
+
   notify() { try { this.onUpdate && this.onUpdate(this.state()); } catch (e) {} }
   state() {
     return {
       url: this.url, port: this.srv.port, token: this.srv.token,
       ws: workspaceInfo(), startedAt: this.startedAt, lastErr: this.lastErr,
       mdPath: this.mdPath(), mode: this.mode, protocol: this.protocol, version: BRIDGE_VERSION,
+      tunnelMode: this.tunnelMode, tsFixedUrl: this.tsFixedUrl, paused: this.paused,
       proxy: this.proxy, attempts: this.attemptLog,
       cfLoggedIn: !!(this.cfCredentials && (this.cfCredentials.apiToken || this.cfCredentials.globalApiKey || this.cfCredentials.tunnelToken)),
       cfEmail: this.cfCredentials ? this.cfCredentials.email || "" : "",
@@ -1641,6 +1743,23 @@ class Bridge {
       fs.writeFileSync(this.connPath(), JSON.stringify(c, null, 2), "utf8");
     } catch (e) {}
   }
+
+  // 面板暂停: 停掉公网通道(我方也连不进), 看门狗不自愈; 固定 URL(tsFixedUrl)保留, 状态持久化
+  async pause() {
+    this.paused = true;
+    try { await this.ctx.globalState.update("daoBridgePaused", true); } catch (e) {}
+    this.stop();
+    this._tailscaleOff(); // 撤掉 tailscale 公开映射(设备名/固定 URL 保留)
+    this.lastErr = "已暂停 · 公网通道已停(点「启动」恢复" + (this.tunnelMode === "tailscale" ? "; 固定 URL 保留" : "") + ")";
+    this.notify();
+  }
+
+  // 面板启动: 解除暂停并重新打通
+  async resume() {
+    this.paused = false;
+    try { await this.ctx.globalState.update("daoBridgePaused", false); } catch (e) {}
+    return await this.start();
+  }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1671,6 +1790,29 @@ class BridgeViewProvider {
 
   async handle(m) {
     if (m.op === "restart") { this.bridge.stop(); const url = await this.bridge.start(); this.post({ type: "result", op: "restart", ok: !!url, text: url || this.bridge.lastErr }); return; }
+    if (m.op === "toggleRun") {
+      if (this.bridge.paused) {
+        this.post({ type: "result", op: "toggleRun", ok: true, text: "启动中…" });
+        const url = await this.bridge.resume();
+        this.post({ type: "result", op: "toggleRun", ok: !!url, text: url ? ("已启动 · " + url) : (this.bridge.lastErr || "启动失败") });
+      } else {
+        await this.bridge.pause();
+        this.post({ type: "result", op: "toggleRun", ok: true, text: this.bridge.lastErr || "已暂停" });
+      }
+      this.post({ type: "state", state: this.bridge.state() });
+      return;
+    }
+    if (m.op === "setTunnel") {
+      const mode = m.mode === "tailscale" ? "tailscale" : "cloudflare";
+      const label = mode === "tailscale" ? "Tailscale 固定 URL" : "Cloudflare 动态";
+      await this.bridge.setTunnelMode(mode, m.url || "");
+      this.post({ type: "result", op: "setTunnel", ok: true, text: "已切到「" + label + "」模式, 重启隧道中…" });
+      this.bridge.stop();
+      const url = await this.bridge.start();
+      this.post({ type: "result", op: "setTunnel", ok: !!url, text: url ? ("已切到「" + label + "」· " + url) : (this.bridge.lastErr || "启动失败") });
+      this.post({ type: "state", state: this.bridge.state() });
+      return;
+    }
     if (m.op === "stop") { this.bridge.stop(); this.notify(); return; }
     if (m.op === "copyUrl") { await vscode.env.clipboard.writeText(this.bridge.url || ""); vscode.window.showInformationMessage("已复制公网 URL"); return; }
     if (m.op === "copyToken") { await vscode.env.clipboard.writeText(this.bridge.srv.token || ""); vscode.window.showInformationMessage("已复制 Token"); return; }
@@ -1801,9 +1943,22 @@ pre{white-space:pre-wrap;word-break:break-all;background:var(--vscode-textCodeBl
   <div class="lbl">在线Agent</div><div id="agents" class="val">0</div>
   <div class="row" style="margin-top:6px">
     <button onclick="send('copyAll')" title="一键复制公网 URL 与 Token（含 Authorization 头），直接粘贴给云端 Agent">📋 复制</button>
+    <button id="toggleRun" onclick="send('toggleRun')" title="暂停=停掉公网通道（外部连不进），固定 URL 保留、看门狗不自愈；启动=恢复打通">⏸ 暂停</button>
     <button onclick="send('restart')" title="重启隧道（URL 会变，Token 不变）">♻️ 重启隧道</button>
     <button onclick="send('refreshToken')" title="生成全新 Token，旧 Token 立即作废，并用新 Token 重连公网通道">🔄 刷新Token</button>
   </div>
+</div>
+
+<!-- 模块1.5: 穿透模式 · 界面切换 -->
+<div class="section">
+<h3>🔀 穿透模式</h3>
+<div class="muted">一键切换公网入口方式，无需命令行：<b>Cloudflare 动态</b>（零配置，URL 重启会变）或 <b>Tailscale 固定</b>（<code>*.ts.net</code>，URL 永不变，需本机已 <code>tailscale up</code> 登录）。</div>
+<div class="row" style="margin-top:6px">
+  <button id="modeCf" onclick="send('setTunnel',null,{mode:'cloudflare',url:v('tsUrl')})" title="Cloudflare 快速隧道，动态 URL（trycloudflare.com）">☁️ Cloudflare 动态</button>
+  <button id="modeTs" onclick="send('setTunnel',null,{mode:'tailscale',url:v('tsUrl')})" title="Tailscale 固定 URL（*.ts.net），重启不变">🔒 Tailscale 固定</button>
+</div>
+<input id="tsUrl" placeholder="固定 URL（可留空，自动从 tailscale status 推导），如 https://henry.tailf52e02.ts.net">
+<div id="tunnelHint" class="muted" style="margin-top:4px">当前：Cloudflare 动态模式</div>
 </div>
 
 <!-- 模块2: CloudFlare 命名隧道 (可选) -->
@@ -1858,9 +2013,10 @@ document.addEventListener('click',function(e){var t=e.target.closest('[data-op]'
 function v(id){return document.getElementById(id).value;}
 const out=document.getElementById('out');
 window.addEventListener('message',(e)=>{const m=e.data;
-  if(m.type==='state'){const s=m.state||{};const on=!!s.url;
-    document.getElementById('dot').className='dot '+(on?'ok':(s.lastErr?'bad':'pending'));
-    document.getElementById('stat').textContent=on?'已打通 · 公网在线':(s.lastErr?(''+s.lastErr):'隧道启动中…');
+  if(m.type==='state'){const s=m.state||{};const on=!!s.url;const paused=!!s.paused;
+    document.getElementById('dot').className='dot '+(paused?'pending':(on?'ok':(s.lastErr?'bad':'pending')));
+    document.getElementById('stat').textContent=paused?'已暂停 · 公网通道已停（点「启动」恢复'+(s.tsFixedUrl?'，固定 URL 保留':'')+'）':(on?'已打通 · 公网在线':(s.lastErr?(''+s.lastErr):'隧道启动中…'));
+    var tr=document.getElementById('toggleRun');if(tr){tr.textContent=paused?'▶ 启动':'⏸ 暂停';tr.style.outline=paused?'2px solid var(--vscode-focusBorder)':'';}
     document.getElementById('url').textContent=s.url||'—';
     document.getElementById('ws').textContent=s.ws?(s.ws.name+' · '+s.ws.root):'—';
     document.getElementById('mode').textContent=':'+s.port+' / '+s.mode+(s.protocol?' / '+s.protocol:'');
@@ -1868,6 +2024,12 @@ window.addEventListener('message',(e)=>{const m=e.data;
     document.getElementById('net').textContent=(s.proxy?('代理 '+s.proxy):'直连(无代理)')+(chain?(' · '+chain):'');
     document.getElementById('agents').textContent=String(s.agentCount||0);
     document.getElementById('boot').textContent=s.bootstrap||('irm '+(s.url||'<公网URL>')+'/api/bootstrap.ps1 | iex');
+    var tm=s.tunnelMode||'cloudflare';
+    var bCf=document.getElementById('modeCf'),bTs=document.getElementById('modeTs');
+    if(bCf)bCf.style.outline=(tm==='cloudflare')?'2px solid var(--vscode-focusBorder)':'';
+    if(bTs)bTs.style.outline=(tm==='tailscale')?'2px solid var(--vscode-focusBorder)':'';
+    var tsi=document.getElementById('tsUrl');if(tsi&&!tsi.value&&s.tsFixedUrl)tsi.value=s.tsFixedUrl;
+    var th=document.getElementById('tunnelHint');if(th)th.textContent=(tm==='tailscale')?'当前：Tailscale 固定模式（*.ts.net，URL 不变）':'当前：Cloudflare 动态模式（trycloudflare.com，重启会变）';
     var loggedIn=!!(s.cfLoggedIn||s.mode==='named');
     document.getElementById('logoutBtn').style.display=loggedIn?'block':'none';
     const cfSt=document.getElementById('cfStatus');
