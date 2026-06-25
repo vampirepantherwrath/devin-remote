@@ -12,6 +12,12 @@
 
 前置条件（Tailscale 模式）：本机已 `tailscale up` 登录、tailnet 后台开启 MagicDNS + HTTPS Certificates + **Funnel**。默认走 Funnel（公网可达），**访问端（云端 Agent）无需加入你的 tailnet、无需 auth key**；若设 `daoBridge.tailscaleFunnel=false` 退回 `serve`，则访问端必须也在同一 tailnet 内才能解析 `*.ts.net`。相关设置项：`daoBridge.tunnelMode`、`daoBridge.tailscalePath`、`daoBridge.tailscaleServe`、`daoBridge.tailscaleFunnel`。
 
+> ⚠️ **Linux 一次性授权（关键）**：tailscale funnel/serve 默认需 root。若用 `sudo` 起 funnel，则本插件（以普通用户运行）执行 `funnel off/on` 会**因无权限静默失败**——表现为「⏸ 暂停 / ▶ 启动」点了没反应、外部仍连得进。解决：一次性授权当前用户操作 tailscale（永久，写入 tailscaled 持久状态，重启不失效，不提升其它权限）：
+> ```bash
+> sudo tailscale set --operator=$USER      # 撤销：sudo tailscale set --operator=
+> ```
+> 授权后插件即可免 sudo、免弹框地管理 funnel，暂停/启动按钮才会真正生效。
+
 「⏸ 暂停」在 Tailscale 模式下会执行 `tailscale funnel/serve off` 撤掉公开映射（设备名/固定 URL 永久保留，外部连不进），「▶ 启动」重新打通。
 
 ## 刷新 Token 按钮（v3.4.0）
