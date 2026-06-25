@@ -1322,26 +1322,42 @@ class Bridge {
         this.lastErr = "读取 tailscale 状态失败(确认已安装并 `tailscale up` 登录): " + (e && e.message ? e.message : e);
       }
     }
-    // 自动 serve: 把本机 http 端口暴露到 tailnet 443 (用户可在设置关掉自行管理)
-    let serve = true;
-    try { serve = vscode.workspace.getConfiguration("daoBridge").get("tailscaleServe") !== false; } catch (e) {}
-    if (serve) {
+    // 自动暴露本机端口到 443。默认 funnel(公网可达, 云端 Agent 无需加入 tailnet);
+    // 设 daoBridge.tailscaleFunnel=false 则退回 serve(仅 tailnet 内可达, 需云端也在同一 tailnet)。
+    // 设 daoBridge.tailscaleServe=false 完全关闭自动暴露, 由用户自行管理。
+    let auto = true, funnel = true;
+    try {
+      const c = vscode.workspace.getConfiguration("daoBridge");
+      auto = c.get("tailscaleServe") !== false;
+      funnel = c.get("tailscaleFunnel") !== false;
+    } catch (e) {}
+    let proto = funnel ? "funnel" : "serve";
+    if (auto) {
       try {
-        cp.execFileSync(bin, ["serve", "--bg", "--https=443", "http://127.0.0.1:" + port], { encoding: "utf8", windowsHide: true, timeout: 15000 });
+        cp.execFileSync(bin, [proto, "--bg", "--https=443", "http://127.0.0.1:" + port], { encoding: "utf8", windowsHide: true, timeout: 15000 });
       } catch (e) {
-        this.lastErr = "tailscale serve 失败(需后台开启 MagicDNS + HTTPS 证书): " + (e && e.message ? e.message : e);
+        this.lastErr = "tailscale " + proto + " 失败(需后台开启 MagicDNS + HTTPS 证书" + (funnel ? " + Funnel" : "") + "): " + (e && e.message ? e.message : e);
       }
     }
     if (url) {
       this.url = url.replace(/\/$/, "");
-      this.attemptLog = [{ mode: "tailscale", proto: "serve", ok: true, url: this.url }];
+      this.attemptLog = [{ mode: "tailscale", proto: proto, ok: true, url: this.url }];
       this.writeArtifacts(); this.notify();
       return this.url;
     }
     this.lastErr = this.lastErr || "未能确定固定 URL: 请在面板填固定 URL, 或确保本机已 `tailscale up` 登录";
-    this.attemptLog = [{ mode: "tailscale", proto: "serve", ok: false, url: "" }];
+    this.attemptLog = [{ mode: "tailscale", proto: proto, ok: false, url: "" }];
     this.writeArtifacts(); this.notify();
     return "";
+  }
+
+  // 暂停时撤掉 tailscale 公开映射(funnel/serve off), 设备名/固定 URL 保留, 恢复时重新打通。
+  _tailscaleOff() {
+    if (this.tunnelMode !== "tailscale") return;
+    const bin = this._tailscaleBin();
+    for (const op of ["funnel", "serve"]) {
+      try { cp.execFileSync(bin, [op, "--https=443", "off"], { encoding: "utf8", windowsHide: true, timeout: 10000 }); } catch (e) {}
+    }
   }
 
   // 界面切换穿透模式 — 更新并持久化(globalState), 由调用方负责 stop()+start() 生效。
@@ -1733,7 +1749,8 @@ class Bridge {
     this.paused = true;
     try { await this.ctx.globalState.update("daoBridgePaused", true); } catch (e) {}
     this.stop();
-    this.lastErr = "已暂停 · 公网通道已停(点「启动」恢复" + (this.tsFixedUrl ? "; 固定 URL 保留" : "") + ")";
+    this._tailscaleOff(); // 撤掉 tailscale 公开映射(设备名/固定 URL 保留)
+    this.lastErr = "已暂停 · 公网通道已停(点「启动」恢复" + (this.tunnelMode === "tailscale" ? "; 固定 URL 保留" : "") + ")";
     this.notify();
   }
 

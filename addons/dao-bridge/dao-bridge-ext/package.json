@@ -2,7 +2,7 @@
   "name": "dao-bridge",
   "displayName": "DAO Bridge · 公网穿透",
   "description": "工作区公网穿透：插件启动即自动打通整机隧道。默认走 Cloudflare 快速隧道；配置账号即走命名隧道；内置 cloudflared、代理自适应、看门狗自愈。道法自然·无为而无不为。",
-  "version": "3.12.0",
+  "version": "3.13.0",
   "publisher": "dao",
   "engines": { "vscode": "^1.80.0" },
   "categories": ["Other"],
@@ -44,7 +44,8 @@
         "daoBridge.watchdogFailThreshold": { "type": "number", "default": 2, "description": "连续自检失败多少次后自动重连隧道（识破息屏/休眠后的僵尸连接）。" },
         "daoBridge.tunnelMode": { "type": "string", "enum": ["cloudflare", "tailscale"], "default": "cloudflare", "description": "穿透模式默认值（也可在面板「穿透模式」一键切换并持久化）。cloudflare=动态快速隧道；tailscale=固定 *.ts.net URL。" },
         "daoBridge.tailscalePath": { "type": "string", "default": "", "description": "（Tailscale 模式）tailscale 可执行路径，留空自动探测（Windows: Program Files\\Tailscale；macOS: /Applications/Tailscale.app；否则走 PATH）。" },
-        "daoBridge.tailscaleServe": { "type": "boolean", "default": true, "description": "（Tailscale 模式）切到固定模式时自动执行 tailscale serve 把本机端口暴露到 *.ts.net:443。关闭则由你自行管理 serve。" }
+        "daoBridge.tailscaleServe": { "type": "boolean", "default": true, "description": "（Tailscale 模式）切到固定模式时自动把本机端口暴露到 *.ts.net:443。关闭则由你自行管理 serve/funnel。" },
+        "daoBridge.tailscaleFunnel": { "type": "boolean", "default": true, "description": "（Tailscale 模式）用 Funnel（公网可达，云端 Agent 无需加入 tailnet）暴露固定 URL；关闭则退回 serve（仅同一 tailnet 内可达）。" }
       }
     }
   }
