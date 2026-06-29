@@ -19,7 +19,7 @@
 | 模式 | URL | 适用 |
 |---|---|---|
 | `cloudflare`（默认） | 动态 `https://<random>.trycloudflare.com`（重启会变） | 零账号、零配置、即开即用 |
-| `tailscale` | 固定 `https://<host>.ts.net`（永不变） | 已组 tailnet、要稳定 URL；云端需在同一 tailnet 内 |
+| `tailscale` | 固定 `https://<host>.ts.net`（永不变） | 已组 tailnet、要稳定 URL；默认开 funnel 公网可达 |
 
 ```bash
 # 固定 URL 模式：经 tailscale serve 把本机端口暴露到 tailnet（需先 `tailscale up` 登录）
@@ -28,7 +28,11 @@ DAO_TUNNEL=tailscale DAO_TOKEN=<token> node agent.js
 DAO_TUNNEL=tailscale DAO_PUBLIC_URL=https://henry.tailf52e02.ts.net DAO_TOKEN=<token> node agent.js
 ```
 
-> tailscale 模式默认会自动跑 `tailscale serve --bg --https=443 http://127.0.0.1:<port>`（需 tailnet 后台开启 MagicDNS + HTTPS Certificates）；若想自行管理 serve，设 `DAO_TS_SERVE=0` 关闭。云端 Agent 必须**也在同一个 tailnet 内**（装 tailscale 并用 auth key `tailscale up`）才能解析 `*.ts.net` 直连。
+> tailscale 模式会自动执行两步：
+> 1. `tailscale serve --bg --https=443 http://127.0.0.1:<port>` — 把本机端口反代到 tailnet（tailnet 内可达）。需 tailnet 后台开启 MagicDNS + HTTPS Certificates。
+> 2. `tailscale funnel --bg 443` — 把 serve 暴露到公网（公网可达）。需 tailnet 后台 ACL 里开启 Funnel 权限（[nodeAttrs → funnel](https://tailscale.com/kb/1223/funnel#enable-funnel)）。
+>
+> 设 `DAO_TS_SERVE=0` 可关闭自动 serve（自行管理）；设 `DAO_TS_FUNNEL=0` 可关闭 funnel（仅 tailnet 内可达，不需要 funnel 权限）。
 
 ## 启动(本机)
 
@@ -70,3 +74,4 @@ curl -X POST https://<random>.trycloudflare.com/api/exec-sync \
 | `DAO_TAILSCALE` | tailscale 可执行路径（仅 tailscale 模式） | `tailscale`（PATH） |
 | `DAO_PUBLIC_URL` | 固定公网 URL 覆盖（留空自动从 `tailscale status` 推导） | 空 |
 | `DAO_TS_SERVE` | 是否自动跑 `tailscale serve` 暴露端口；设 `0` 关闭自行 serve | `1` |
+| `DAO_TS_FUNNEL` | 是否自动跑 `tailscale funnel` 暴露到公网；设 `0` 关闭（仅 tailnet 内可达） | `1` |

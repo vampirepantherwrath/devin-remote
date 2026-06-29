@@ -657,7 +657,8 @@ export async function activate(context: vscode.ExtensionContext) {
             return {
                 on: !!url, url, token, port, host,
                 updated: c.updated || extra.startedAt || '',
-                mode: extra.mode || (named ? 'named' : 'quick'),
+                mode: c.mode || extra.mode || (named ? 'named' : 'quick'),
+                funnelEnabled: !!(c.funnelEnabled || extra.funnelEnabled),
                 agentCount: extra.agents_online || extra.agentCount || 0,
                 named, persistent: !bridgeUrl && !!url,
             };
@@ -2789,7 +2790,7 @@ function readBridgeConn(): any {
     try {
         const p = path.join(os.homedir(), '.dao', 'bridge', 'conn.json');
         const c = JSON.parse(fs.readFileSync(p, 'utf8'));
-        return { url: c.url || '', workspace: c.workspace || '', root: c.root || '', host: c.host || '', updated: c.updated || '', port: c.port || 0 };
+        return { url: c.url || '', workspace: c.workspace || '', root: c.root || '', host: c.host || '', updated: c.updated || '', port: c.port || 0, mode: c.mode || '', funnelEnabled: !!c.funnelEnabled };
     } catch { return null; }
 }
 
@@ -4105,10 +4106,11 @@ function rBridgeFull(){
     var isRelay=b.relayUrl&&b.url===b.relayUrl;
     h+='<div class="card"><div class="cr"><span class="l">状态</span><span class="v" style="color:var(--success)">'+stTxt+'</span></div>';
     if(b.persistent&&b.source)h+='<div class="cr"><span class="l">来源</span><span class="v" style="font-size:10px">'+esc(b.source)+(typeof b.ageMs==="number"?(' · '+Math.round(b.ageMs/60000)+"分钟前"):"")+'</span></div>';
-    h+='<div class="cr"><span class="l">'+(isRelay?'中继 Relay':(b.named?'命名隧道(固定)':'公网 URL'))+'</span><span class="v" style="font-size:10px;word-break:break-all"><a href="#" onclick="cmd(&#39;copyBridgeUrl&#39;);return false" style="color:var(--accent2)">'+esc(b.url)+'</a></span></div>';
+    var isTailscale=b.mode==='tailscale';
+    h+='<div class="cr"><span class="l">'+(isTailscale?'Tailscale'+(b.funnelEnabled?' · Funnel':' · Serve'):(isRelay?'中继 Relay':(b.named?'命名隧道(固定)':'公网 URL')))+'</span><span class="v" style="font-size:10px;word-break:break-all"><a href="#" onclick="cmd(&#39;copyBridgeUrl&#39;);return false" style="color:var(--accent2)">'+esc(b.url)+'</a></span></div>';
     if(b.session)h+='<div class="cr"><span class="l">会话</span><span class="v">'+esc(b.session)+'</span></div>';
     if(b.port||b.localPort)h+='<div class="cr"><span class="l">本地端口</span><span class="v">'+(b.port||b.localPort)+'</span></div>';
-    h+='<div class="cr"><span class="l">代理 / 链路</span><span class="v" style="font-size:10px">'+(b.proxy?('代理 '+esc(b.proxy)):'直连(无代理)')+(isRelay?' · relay/wss':(b.named?' · named/http2':' · quick/http2'))+'</span></div>';
+    h+='<div class="cr"><span class="l">代理 / 回退链</span><span class="v" style="font-size:10px">'+(b.proxy?('代理 '+esc(b.proxy)):'直连(无代理)')+(isTailscale?(' · tailscale/funnel'+(b.funnelEnabled?'✓':'✗')):(isRelay?' · relay/wss':(b.named?' · named/http2':' · quick/http2')))+'</span></div>';
     h+='<div class="cr"><span class="l">在线 Agent</span><span class="v">'+(b.agentCount||0)+'</span></div>';
     if(b.workspace)h+='<div class="cr"><span class="l">工作区</span><span class="v">'+esc(b.workspace)+'</span></div>';
     if(b.host)h+='<div class="cr"><span class="l">主机</span><span class="v">'+esc(b.host)+'</span></div>';

@@ -1075,6 +1075,8 @@ class Bridge {
     this._starting = false;
     this.cfCredentials = loadCfCredentials();
     this.srv._bridgeRef = this;
+    // tailscale 状态
+    this.funnelEnabled = false;
     // 自愈看门狗状态 — 跨 stop()/start() 存活, 仅 deactivate 才停
     this._wd = null;
     this._healthFails = 0;
@@ -1198,6 +1200,19 @@ class Bridge {
       if (!bin) { this.lastErr = "cloudflared 不可用（内置缺失 + 多镜像下载均失败）— 请检查网络或在设置填 cloudflaredPath"; this.writeArtifacts(); this.notify(); return ""; }
       this.cfBin = bin;
 
+      // 隧道模式: tailscale 优先（若配置了 tunnelMode=tailscale），否则 cloudflare。
+      const tunnelMode = String(cfg.get("tunnelMode") || "").trim().toLowerCase();
+      if (tunnelMode === "tailscale" || tunnelMode === "ts") {
+        this.mode = "tailscale"; this.protocol = "tailscale"; this.notify();
+        const tsOk = await this._runTailscaleAttempt(port, cfg);
+        this.attemptLog.push({ mode: "tailscale", proto: "funnel", ok: tsOk, url: tsOk ? this.url : "" });
+        if (tsOk) { this.writeArtifacts(); this.notify(); return this.url; }
+        this.lastErr = "tailscale 隧道失败；确保 tailscale 已登录 (`tailscale up`) 且 tailnet 后台开启 MagicDNS + HTTPS + Funnel。";
+        // tailscale 失败不回退 cloudflare（用户显式选了 tailscale）
+        this.writeArtifacts(); this.notify();
+        return "";
+      }
+
       // 协议: http2 优先 — TCP/443, 穿透性最强(代理/GFW/企业网友好)。
       // 实测多数网络(含国内、本测试机)UDP/7844 被封, quic 必失败; cloudflared 自身亦会
       // quic→http2 预检回退, 故直接 http2 最快最稳。quic 仅作兜底(极少数仅放行 UDP 的网络)。
@@ -1281,6 +1296,7 @@ class Bridge {
       agentCount: this.srv.agentRegistry.size,
       bootstrap: this.bootstrapCmd(),
       lastOkAt: this._lastOkAt, healing: this._healing, healthFails: this._healthFails,
+      funnelEnabled: this.funnelEnabled,
     };
   }
 
@@ -1624,13 +1640,72 @@ class Bridge {
     const connData = {
       url: this.url, token: this.srv.token, local_url: "http://127.0.0.1:" + this.srv.port,
       port: this.srv.port, workspace: wsInfo.name, root: wsInfo.root, host: wsInfo.host,
+      mode: this.mode, funnelEnabled: this.funnelEnabled,
       updated: new Date().toISOString(), version: BRIDGE_VERSION,
     };
     try { fs.writeFileSync(this.connPath(), JSON.stringify(connData, null, 2), "utf8"); } catch (e) {}
     try { fs.writeFileSync(this.globalConnPath(), JSON.stringify(connData, null, 2), "utf8"); } catch (e) {}
   }
 
+  // tailscale 隧道: serve + funnel → 公网可达的固定 URL
+  async _runTailscaleAttempt(port, cfg) {
+    const tsBin = String(cfg.get("tailscalePath") || "tailscale").trim() || "tailscale";
+    const tsServe = cfg.get("tsServe") !== false;
+    const tsFunnel = cfg.get("tsFunnel") !== false;
+    const fixedUrl = String(cfg.get("fixedUrl") || "").trim();
+    const run = (args) => cp.execFileSync(tsBin, args, { encoding: "utf8", windowsHide: true, timeout: 15000 });
+    let url = fixedUrl;
+    this.funnelEnabled = false;
+    // ① 推导 URL (tailscale status --json → Self.DNSName)
+    if (!url) {
+      try {
+        const st = JSON.parse(run(["status", "--json"]));
+        const dns = st && st.Self && st.Self.DNSName;
+        if (dns) url = "https://" + String(dns).replace(/\.$/, "");
+      } catch (e) {
+        this.lastErr = "tailscale status 失败: " + (e && e.message || "").slice(0, 200);
+        return false;
+      }
+    }
+    // ② tailscale serve: tailnet 内可达
+    if (tsServe) {
+      try {
+        run(["serve", "--bg", "--https=443", "http://127.0.0.1:" + port]);
+      } catch (e) {
+        this.lastErr = "tailscale serve 失败: " + (e && e.message || "").slice(0, 200);
+        return false;
+      }
+    }
+    // ③ tailscale funnel: 公网可达
+    if (tsFunnel) {
+      try {
+        run(["funnel", "--bg", "443"]);
+        this.funnelEnabled = true;
+      } catch (e) {
+        const msg = String(e && e.message || "");
+        this.lastErr = "tailscale funnel 失败: " + msg.slice(0, 200);
+        if (/not enabled|not available|Funnel is not/i.test(msg)) {
+          this.lastErr += " — 请在 https://login.tailscale.com/admin/acls 开启 Funnel 权限";
+        }
+      }
+    }
+    if (url) {
+      this.url = url.replace(/\/$/, "");
+      return true;
+    }
+    this.lastErr = "未能确定 tailscale URL：请设 daoBridge.fixedUrl 或确保 tailscale 已登录";
+    return false;
+  }
+
   stop() {
+    // tailscale 清理
+    if (this.mode === "tailscale") {
+      const cfg = vscode.workspace.getConfiguration("daoBridge");
+      const tsBin = String(cfg.get("tailscalePath") || "tailscale").trim() || "tailscale";
+      try { cp.execFileSync(tsBin, ["funnel", "--bg", "off"], { encoding: "utf8", windowsHide: true, timeout: 10000 }); } catch (e) {}
+      try { cp.execFileSync(tsBin, ["serve", "--https=443", "off"], { encoding: "utf8", windowsHide: true, timeout: 10000 }); } catch (e) {}
+      this.funnelEnabled = false;
+    }
     try { if (this.proc) { this.proc.kill(); } } catch (e) {}
     this.proc = null;
     this.srv.stop();
