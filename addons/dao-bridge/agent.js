@@ -2,7 +2,8 @@
 // 道法自然 · 去中心化：本机起服务 + 隧道出站，云端直达本机。
 // 两种穿透模式（DAO_TUNNEL 切换）：
 //   - cloudflare（默认）：cloudflared 快速隧道，零账号、URL 动态（*.trycloudflare.com，重启会变）。
-//   - tailscale：固定 URL（*.ts.net / MagicDNS），经 tailscale serve 把本机端口暴露到 tailnet，URL 永不变。
+//   - tailscale：固定 URL（*.ts.net / MagicDNS），经 tailscale serve + funnel 把本机端口暴露到公网，URL 永不变。
+//     serve = tailnet 内可达；funnel = 公网可达（需 tailnet 后台开启 Funnel 功能）。
 // 配置优先级：环境变量 > 同目录 conn.json > 默认值。token 不入库，仅存本机 conn.json。
 const os = require('os');
 const fs = require('fs');
@@ -34,6 +35,9 @@ function loadConf() {
     fixedUrl: process.env.DAO_PUBLIC_URL || c.fixedUrl || '',
     // 是否自动跑 `tailscale serve` 把本机端口暴露到 tailnet（默认开；设 0/false 关闭，自行 serve）
     tsServe: !/^(0|false|no|off)$/i.test(String(process.env.DAO_TS_SERVE ?? c.tsServe ?? '1')),
+    // 是否自动跑 `tailscale funnel` 把 serve 暴露到公网（默认开；设 0/false 关闭，仅 tailnet 内可达）
+    // 需要 tailnet 后台 Access Controls 里开启 Funnel（nodeAttrs → funnel）。
+    tsFunnel: !/^(0|false|no|off)$/i.test(String(process.env.DAO_TS_FUNNEL ?? c.tsFunnel ?? '1')),
   };
 }
 
@@ -82,11 +86,14 @@ function startQuickTunnel(conf, port, onUrl) {
 
 // 启动 tailscale 固定隧道：经 tailnet 的 MagicDNS 名暴露本机端口，URL 永不变。
 // 1) 若未显式给 fixedUrl，则从 `tailscale status --json` 读 Self.DNSName 推导 https URL；
-// 2) 默认跑 `tailscale serve --bg --https=443 http://127.0.0.1:<port>` 把 443 反代到本机端口。
+// 2) 默认跑 `tailscale serve --bg --https=443 http://127.0.0.1:<port>` 把 443 反代到本机端口（tailnet 内可达）；
+// 3) 默认跑 `tailscale funnel --bg 443` 把 serve 暴露到公网（公网可达）。
+//    funnel 需 tailnet 后台 Access Controls → nodeAttrs 里开启 funnel 功能。
 function startTailscaleTunnel(conf, port, onUrl) {
   const ts = conf.tailscale;
   const run = (args) => cp.execFileSync(ts, args, { encoding: 'utf8', windowsHide: true });
   let url = conf.fixedUrl;
+  let funnelOk = false;
   if (!url) {
     try {
       const st = JSON.parse(run(['status', '--json']));
@@ -96,6 +103,7 @@ function startTailscaleTunnel(conf, port, onUrl) {
       console.error('[dao-bridge] 读取 tailscale 状态失败（确认已安装并 `tailscale up` 登录）: ' + (e && e.message));
     }
   }
+  // ① tailscale serve: tailnet 内可达
   if (conf.tsServe) {
     try {
       run(['serve', '--bg', '--https=443', 'http://127.0.0.1:' + port]);
@@ -104,11 +112,33 @@ function startTailscaleTunnel(conf, port, onUrl) {
       console.error('[dao-bridge] `tailscale serve` 失败（需 tailnet 开启 MagicDNS+HTTPS，或自行 serve）: ' + (e && e.message));
     }
   }
+  // ② tailscale funnel: 公网可达（把 serve 暴露到公网）
+  if (conf.tsFunnel) {
+    try {
+      run(['funnel', '--bg', '443']);
+      funnelOk = true;
+      console.log('[dao-bridge] tailscale funnel: 443 已暴露到公网 — 公网可达 ' + (url || '<MagicDNS>'));
+    } catch (e) {
+      const msg = String(e && e.message || '');
+      console.error('[dao-bridge] `tailscale funnel` 失败: ' + msg);
+      if (/not enabled|not available|Funnel is not/i.test(msg)) {
+        console.error('[dao-bridge]   → Funnel 未在 tailnet 后台启用。');
+        console.error('[dao-bridge]   → 请登录 https://login.tailscale.com/admin/acls → nodeAttrs 添加 funnel 权限。');
+        console.error('[dao-bridge]   → 参考: https://tailscale.com/kb/1223/funnel#enable-funnel');
+      } else {
+        console.error('[dao-bridge]   → 确保 tailscale 已登录 (`tailscale up`) 且 serve 已配置。');
+      }
+    }
+  }
   if (url) onUrl(url.replace(/\/$/, ''));
   else console.error('[dao-bridge] 未能确定固定 URL：请设 DAO_PUBLIC_URL=https://<host>.ts.net 或确保 tailscale 已登录');
   return {
-    stop() { if (conf.tsServe) { try { run(['serve', '--https=443', 'off']); } catch {} } },
+    stop() {
+      if (conf.tsFunnel) { try { run(['funnel', '--bg', 'off']); } catch {} }
+      if (conf.tsServe) { try { run(['serve', '--https=443', 'off']); } catch {} }
+    },
     currentUrl: () => url || '',
+    funnelEnabled: () => funnelOk,
   };
 }
 
@@ -130,7 +160,9 @@ function startTailscaleTunnel(conf, port, onUrl) {
     try {
       fs.writeFileSync(CONN, JSON.stringify({
         token: conf.token, port: server.port, root: conf.root, host: os.hostname(),
-        publicUrl, updated: new Date().toISOString(),
+        publicUrl, tunnel: conf.tunnel,
+        funnel: conf.tunnel === 'tailscale' ? (tunnel && tunnel.funnelEnabled ? tunnel.funnelEnabled() : false) : undefined,
+        updated: new Date().toISOString(),
       }, null, 2));
     } catch {}
   };
@@ -140,17 +172,23 @@ function startTailscaleTunnel(conf, port, onUrl) {
     persist();
     console.log('[dao-bridge] 公网入口: ' + u + '  (Authorization: Bearer <token>)');
   };
-  const tunnel = conf.tunnel === 'tailscale'
-    ? startTailscaleTunnel(conf, server.port, onUrl)
-    : startQuickTunnel(conf, server.port, onUrl);
+  let tunnel;
+  if (conf.tunnel === 'tailscale') {
+    tunnel = startTailscaleTunnel(conf, server.port, onUrl);
+  } else {
+    tunnel = startQuickTunnel(conf, server.port, onUrl);
+  }
 
   persist();
   setInterval(persist, 5000);
 
   console.log('[dao-bridge] host=' + os.hostname() + ' port=' + server.port + ' tunnel=' + conf.tunnel);
-  console.log(conf.tunnel === 'tailscale'
-    ? '[dao-bridge] tailscale 固定隧道：URL 永不变（*.ts.net），云端 tailnet 内直达'
-    : '[dao-bridge] cloudflared 快速隧道启动中… 拿到 URL 后即打印公网入口（重启会变）');
+  if (conf.tunnel === 'tailscale') {
+    const fOk = tunnel.funnelEnabled ? tunnel.funnelEnabled() : false;
+    console.log('[dao-bridge] tailscale 固定隧道：URL 永不变（*.ts.net）' + (fOk ? '，funnel 已开 → 公网可达' : '，funnel 未开 → 仅 tailnet 内可达'));
+  } else {
+    console.log('[dao-bridge] cloudflared 快速隧道启动中… 拿到 URL 后即打印公网入口（重启会变）');
+  }
   process.on('SIGINT', () => { tunnel.stop(); process.exit(0); });
   process.stdin.resume();
 })();

@@ -40,6 +40,11 @@
         "daoBridge.proxyUrl": { "type": "string", "default": "", "description": "（可选）出站代理，如 http://127.0.0.1:7890。留空时自动探测环境变量与常见本地代理端口。" },
         "daoBridge.autoProxy": { "type": "boolean", "default": true, "description": "自动探测本机代理（clash/v2ray 常见端口）用于 cloudflared 出站，适配国内网络。" },
         "daoBridge.confineToWorkspace": { "type": "boolean", "default": false, "description": "将 /api/ls /api/read /api/write 限制在工作区根目录内（沙箱）。默认关闭=整机穿透：云端 Agent 可操作整台电脑，工作区只是其中一部分。" },
+        "daoBridge.tunnelMode": { "type": "string", "default": "", "enum": ["", "cloudflare", "tailscale", "ts"], "description": "穿透模式：留空/cloudflare = Cloudflare 隧道（默认）；tailscale/ts = Tailscale serve + funnel（固定 URL·公网可达）。" },
+        "daoBridge.tailscalePath": { "type": "string", "default": "tailscale", "description": "tailscale 可执行路径（仅 tailscale 模式）" },
+        "daoBridge.fixedUrl": { "type": "string", "default": "", "description": "（tailscale 模式）固定公网 URL 覆盖；留空则自动从 tailscale status 推导 https://<DNSName>.ts.net" },
+        "daoBridge.tsServe": { "type": "boolean", "default": true, "description": "（tailscale 模式）是否自动跑 tailscale serve 暴露端口到 tailnet" },
+        "daoBridge.tsFunnel": { "type": "boolean", "default": true, "description": "（tailscale 模式）是否自动跑 tailscale funnel 暴露到公网（需 tailnet ACL 开启 Funnel 权限）" },
         "daoBridge.watchdogIntervalMs": { "type": "number", "default": 20000, "description": "自愈看门狗回环自检间隔（毫秒）。只要 IDE 在跑就周期性打自己的公网 /api/health，端到端验证隧道可达。" },
         "daoBridge.watchdogFailThreshold": { "type": "number", "default": 2, "description": "连续自检失败多少次后自动重连隧道（识破息屏/休眠后的僵尸连接）。" }
       }
